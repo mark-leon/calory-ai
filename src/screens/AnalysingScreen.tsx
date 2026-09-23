@@ -6,18 +6,18 @@ import { Animated, Easing, Image, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SecondaryButton } from '../components/Buttons';
 import { useLanguage } from '../i18n/LanguageContext';
+import { analyzeMeal } from '../lib/scan';
 import { RootStackParamList } from '../navigation/types';
+import { useAppState } from '../state/AppStateContext';
 import { useTheme } from '../theme/ThemeContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Analysing'>;
-
-const ANALYSING_MS = 2600;
-const FAIL_CHANCE = 0.15;
 
 export default function AnalysingScreen({ route, navigation }: Props) {
   const { photoUri } = route.params;
   const { colors } = useTheme();
   const { t, fonts } = useLanguage();
+  const { setScansUsedToday } = useAppState();
   const spin = useRef(new Animated.Value(0)).current;
   const sweep = useRef(new Animated.Value(0)).current;
 
@@ -27,15 +27,20 @@ export default function AnalysingScreen({ route, navigation }: Props) {
     spinLoop.start();
     sweepLoop.start();
 
-    const timer = setTimeout(() => {
-      const failed = Math.random() < FAIL_CHANCE;
-      navigation.replace('ScanResult', { photoUri, failed });
-    }, ANALYSING_MS);
+    // Cancel just stops us navigating; the request itself still finishes server-side.
+    let cancelled = false;
+    analyzeMeal(photoUri).then((outcome) => {
+      if (cancelled) return;
+      if (outcome.status !== 'error') setScansUsedToday(outcome.scansUsedToday);
+      if (outcome.status === 'ok') navigation.replace('ScanResult', { photoUri, items: outcome.items });
+      else if (outcome.status === 'quota_exceeded') navigation.replace('Paywall');
+      else navigation.replace('ScanResult', { photoUri, failed: true });
+    });
 
     return () => {
+      cancelled = true;
       spinLoop.stop();
       sweepLoop.stop();
-      clearTimeout(timer);
     };
   }, []);
 

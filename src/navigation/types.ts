@@ -1,4 +1,4 @@
-import type { MealType } from '../state/types';
+import type { MealType, ScanItem } from '../state/types';
 
 export type RootStackParamList = {
   SignIn: undefined;
@@ -10,7 +10,7 @@ export type RootStackParamList = {
   Main: undefined;
   Camera: undefined;
   Analysing: { photoUri: string };
-  ScanResult: { photoUri: string; failed?: boolean };
+  ScanResult: { photoUri: string; items?: ScanItem[]; failed?: boolean };
   Search: { mealType?: MealType } | undefined;
   Paywall: undefined;
 };

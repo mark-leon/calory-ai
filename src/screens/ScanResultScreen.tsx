@@ -8,44 +8,26 @@ import { Card, ErrorCard } from '../components/Cards';
 import { Icon } from '../components/Icon';
 import { PortionStepper } from '../components/PortionStepper';
 import { StripePlaceholder } from '../components/StripePlaceholder';
-import { FOODS } from '../data/foods';
 import { useLanguage } from '../i18n/LanguageContext';
 import { RootStackParamList } from '../navigation/types';
-import { foodToLoggedItem, useAppState } from '../state/AppStateContext';
-import { MealType } from '../state/types';
+import { scanItemToLoggedItem, useAppState } from '../state/AppStateContext';
+import { MealType, ScanItem } from '../state/types';
 import { useTheme } from '../theme/ThemeContext';
 import { guessMealTypeForHour } from '../utils/date';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ScanResult'>;
 
-// A canned "recognition" result standing in for the real vision model this
-// handoff doesn't include — a plate of rice, dal, fried hilsa and potato
-// bhorta, with the hilsa deliberately below the 0.6 confidence bar so the
-// low-confidence treatment (amber border + "Check this" chip) is reachable.
-const SCAN_FOOD_IDS = ['rice', 'dal-red', 'hilsa-fried', 'bhorta-alu'];
-const SCAN_CONFIDENCE = [0.94, 0.88, 0.54, 0.81];
-const INITIAL_QTY = [1, 1, 1, 2];
-
-interface ScanItem {
-  foodId: string;
-  qty: number;
-  confidence: number;
-}
-
 export default function ScanResultScreen({ route, navigation }: Props) {
-  const { photoUri, failed } = route.params;
+  const { photoUri, failed, items: scanned } = route.params;
   const { colors, mode } = useTheme();
   const { lang, t, fonts } = useLanguage();
   const { addItems } = useAppState();
 
   const [collapsed, setCollapsed] = useState(false);
-  const [items, setItems] = useState<ScanItem[]>(
-    SCAN_FOOD_IDS.map((foodId, i) => ({ foodId, qty: INITIAL_QTY[i], confidence: SCAN_CONFIDENCE[i] }))
-  );
+  const [items, setItems] = useState<ScanItem[]>(scanned ?? []);
   const [mealType, setMealType] = useState<MealType>(guessMealTypeForHour(new Date().getHours()));
 
-  const foodsWithData = items.map((it) => ({ ...it, food: FOODS.find((f) => f.id === it.foodId)! }));
-  const total = foodsWithData.reduce((n, it) => n + Math.round(it.food.kcalPerUnit * it.qty), 0);
+  const total = items.reduce((n, it) => n + Math.round(it.food.kcalPerUnit * it.qty), 0);
 
   const mealOptions: { value: MealType; label: string }[] = [
     { value: 'breakfast', label: t.mtBreakfast },
@@ -62,7 +44,7 @@ export default function ScanResultScreen({ route, navigation }: Props) {
   };
 
   const commitToLog = () => {
-    const logged = foodsWithData.map((it) => foodToLoggedItem(it.foodId, it.qty, it.confidence));
+    const logged = items.map(scanItemToLoggedItem);
     addItems(mealType, logged);
     navigation.navigate('Main');
   };
@@ -114,19 +96,20 @@ export default function ScanResultScreen({ route, navigation }: Props) {
               </View>
             </View>
 
-            {foodsWithData.map((it, index) => {
+            {items.map((it, index) => {
               const low = it.confidence < 0.6;
               const kcal = Math.round(it.food.kcalPerUnit * it.qty);
-              const unitLabel = lang === 'en' ? it.food.unitEn : it.food.unitBn;
+              const unitLabel = lang === 'en' ? it.food.unitEn : it.food.unitBn ?? it.food.unitEn;
+              const bn = it.food.bn ?? it.food.en;
               return (
-                <Card key={it.foodId} style={{ borderColor: low ? colors.warn : colors.border, paddingBottom: 12 }}>
+                <Card key={`${it.food.id}-${index}`} style={{ borderColor: low ? colors.warn : colors.border, paddingBottom: 12 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
                     <StripePlaceholder width={48} height={48} radius={12} />
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={{ fontFamily: fonts.semiBold, fontSize: 20, fontWeight: '600', letterSpacing: -0.2, color: colors.ink, lineHeight: 20 * fonts.lineHeightMultiplier }}>
-                        {lang === 'en' ? it.food.en : it.food.bn}
+                        {lang === 'en' ? it.food.en : bn}
                       </Text>
-                      <Text style={{ fontSize: 13, color: colors.muted }}>{lang === 'en' ? it.food.bn : it.food.en}</Text>
+                      <Text style={{ fontSize: 13, color: colors.muted }}>{lang === 'en' ? bn : it.food.en}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 20, fontWeight: '600', letterSpacing: -0.3, color: colors.ink }}>{kcal}</Text>

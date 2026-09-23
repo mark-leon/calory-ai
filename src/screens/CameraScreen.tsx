@@ -19,7 +19,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Camera'>;
 export default function CameraScreen({ navigation }: Props) {
   const { colors } = useTheme();
   const { t, fonts } = useLanguage();
-  const { scansLeftToday, canScan, useScan } = useAppState();
+  const { scansLeftToday, canScan } = useAppState();
   const [permission, requestPermission] = useCameraPermissions();
   const [facing] = useState<CameraType>('back');
   const [flash, setFlash] = useState<FlashMode>('off');
@@ -41,14 +41,12 @@ export default function CameraScreen({ navigation }: Props) {
   const shoot = async () => {
     if (!cameraRef.current || !ready) return;
     const photo = await cameraRef.current.takePictureAsync({ quality: 0.6 });
-    useScan();
     navigation.replace('Analysing', { photoUri: photo.uri });
   };
 
   const pickFromGallery = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.6 });
     if (!result.canceled && result.assets[0]) {
-      useScan();
       navigation.replace('Analysing', { photoUri: result.assets[0].uri });
     }
   };

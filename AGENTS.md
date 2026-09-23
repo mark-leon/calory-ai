@@ -17,6 +17,10 @@ Bangladeshi calorie tracker (Expo SDK 57, React Native 0.86), bilingual Bengali/
   - Hosted email templates ("Magic Link", "Confirm signup") must show `{{ .Token }}` — see `supabase/templates/otp_code.html`.
   - Hosted Supabase's built-in email sender is heavily rate-limited; set up custom SMTP before real users.
   - "Delete account" in Profile still only clears local data.
+- Meal scan: `supabase/functions/analyze-meal` (Gemini via `generateContent`; model from the `GEMINI_MODEL` secret, default `gemini-3.5-flash-lite`). The app resizes the photo to 1024px JPEG (`src/lib/scan.ts`) and posts it; the function charges the daily quota (`consume_scan`, refunded on error/no food), asks the model to pick from the curated dishes or name the food + grams, and maps "other" items to BFCT/USDA rows via `match_food`. Every scan is logged in `scans` with token counts.
+  - Scan quota lives server-side in `profiles.subscription_*`; clients can no longer write those columns (column grants in `20260924090000_meal_scan.sql`). The local counter just mirrors the server.
+  - Scan results can be any `foods` row, so `LoggedItem` carries `perUnit` nutrition and `gi` may be null.
+  - Photos are not stored yet. Next: opt-in consent + Storage upload of photo and the user's corrections, for evaluating models and later training.
 
 ## Data decisions
 
@@ -27,7 +31,7 @@ Bangladeshi calorie tracker (Expo SDK 57, React Native 0.86), bilingual Bengali/
 
 ## Next steps
 
-1. Supabase Edge Function for meal-photo recognition using Claude vision; API key stays server-side, rate-limit per user. Replace the fake flow in `AnalysingScreen`.
+1. Meal scan: done (Gemini). Build an eval set of ~200 labelled Bangladeshi plate photos and compare models; add opt-in photo/correction storage.
 2. Auth: email done; add Google, and Sign in with Apple on iOS (required once any social login is offered).
 3. Replace local `FOODS` search with Supabase queries; sync logs/weights to Supabase with AsyncStorage as offline cache.
 4. Payments via RevenueCat + native store billing (not Stripe for digital subscriptions).

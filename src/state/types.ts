@@ -16,8 +16,33 @@ export interface LoggedItem {
   proteinG: number;
   carbsG: number;
   fatG: number;
-  gi: GiLevel;
+  // null for composition-table foods (BFCT/USDA have no glycemic index)
+  gi: GiLevel | null;
   confidence?: number;
+  // Nutrition for qty = 1, kept so portions can be edited for foods that aren't
+  // in the bundled FOODS list (scan results from the full database).
+  perUnit?: { kcal: number; proteinG: number; carbsG: number; fatG: number };
+}
+
+// A food as returned by the analyze-meal Edge Function — may be any row in `foods`,
+// not just the curated dishes bundled in src/data/foods.ts.
+export interface ScanFood {
+  id: string;
+  en: string;
+  bn: string | null;
+  unitEn: string;
+  unitBn: string | null;
+  kcalPerUnit: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
+  gi: GiLevel | null;
+}
+
+export interface ScanItem {
+  food: ScanFood;
+  qty: number;
+  confidence: number;
 }
 
 export type DayMeals = Record<MealType, LoggedItem[]>;

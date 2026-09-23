@@ -5,7 +5,7 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { useTheme } from '../theme/ThemeContext';
 import { radius, spacing } from '../theme/tokens';
 import { LoggedItem } from '../state/types';
-import { foodById } from '../data/foods';
+import { withQty } from '../state/AppStateContext';
 import { PortionStepper } from './PortionStepper';
 import { PrimaryButton } from './Buttons';
 
@@ -27,9 +27,8 @@ export function PortionEditSheet({
   }, [item?.id]);
 
   if (!item) return null;
-  const food = foodById(item.foodId);
   const step = qty < 1 ? 0.25 : 0.5;
-  const kcalPreview = food ? Math.round(food.kcalPerUnit * qty) : item.kcal;
+  const kcalPreview = withQty(item, qty).kcal;
   const unitLabel = lang === 'en' ? item.unitEn : item.unitBn;
 
   return (

@@ -7,7 +7,7 @@ import { useAuth } from './AuthContext';
 import { RemoteProfile, fetchProfile, saveProfile } from './profileSync';
 import { buildSeedLogs, buildSeedWeights } from './seed';
 import {
-  DayLog, LoggedItem, MealType, PersistedState, Settings, Subscription, WeightEntry, emptyDayMeals,
+  DayLog, LoggedItem, MealType, PersistedState, ScanItem, Settings, Subscription, WeightEntry, emptyDayMeals,
 } from './types';
 
 const STORAGE_KEY = 'calories_app_state_v1';
@@ -74,7 +74,8 @@ interface AppStateValue {
   subscription: Subscription;
   scansLeftToday: number;
   canScan: () => boolean;
-  useScan: () => void;
+  /** The server owns the scan count; mirror what analyze-meal reports. */
+  setScansUsedToday: (n: number) => void;
   subscribe: (tier: 'monthly' | 'yearly') => void;
   settings: Settings;
   toggleReminders: () => void;
@@ -252,13 +253,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const key = dateKey(new Date());
       const day = s.logs[key];
       if (!day) return s;
-      const food = foodById(day.meals[mealType].find((it) => it.id === itemId)?.foodId || '');
-      if (!food) return s;
-      const items = day.meals[mealType].map((it) =>
-        it.id === itemId
-          ? { ...it, qty, kcal: Math.round(food.kcalPerUnit * qty), proteinG: Math.round(food.proteinG * qty), carbsG: Math.round(food.carbsG * qty), fatG: Math.round(food.fatG * qty) }
-          : it
-      );
+      const items = day.meals[mealType].map((it) => (it.id === itemId ? withQty(it, qty) : it));
       return { ...s, logs: { ...s.logs, [key]: { ...day, meals: { ...day.meals, [mealType]: items } } } };
     });
   }, []);
@@ -288,11 +283,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return sub.tier !== 'free' || sub.scansUsedToday < FREE_DAILY_SCANS;
   }, [state.subscription]);
 
-  const useScan = useCallback(() => {
-    setState((s) => {
-      const sub = ensureFreshScanCount(s.subscription);
-      return { ...s, subscription: { ...sub, scansUsedToday: sub.scansUsedToday + 1 } };
-    });
+  const setScansUsedToday = useCallback((n: number) => {
+    setState((s) => ({ ...s, subscription: { ...ensureFreshScanCount(s.subscription), scansUsedToday: n } }));
   }, []);
 
   const subscribe = useCallback((tier: 'monthly' | 'yearly') => {
@@ -343,7 +335,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     subscription: freshSub,
     scansLeftToday,
     canScan,
-    useScan,
+    setScansUsedToday,
     subscribe,
     settings: state.settings,
     toggleReminders,
@@ -359,6 +351,49 @@ export function useAppState() {
   const ctx = useContext(AppStateContext);
   if (!ctx) throw new Error('useAppState must be used within AppStateProvider');
   return ctx;
+}
+
+function perUnitOf(item: LoggedItem): NonNullable<LoggedItem['perUnit']> {
+  if (item.perUnit) return item.perUnit;
+  const f = foodById(item.foodId);
+  if (f) return { kcal: f.kcalPerUnit, proteinG: f.proteinG, carbsG: f.carbsG, fatG: f.fatG };
+  // last resort for old items: derive from the rounded totals
+  const q = item.qty || 1;
+  return { kcal: item.kcal / q, proteinG: item.proteinG / q, carbsG: item.carbsG / q, fatG: item.fatG / q };
+}
+
+export function withQty(item: LoggedItem, qty: number): LoggedItem {
+  const u = perUnitOf(item);
+  return {
+    ...item,
+    qty,
+    kcal: Math.round(u.kcal * qty),
+    proteinG: Math.round(u.proteinG * qty),
+    carbsG: Math.round(u.carbsG * qty),
+    fatG: Math.round(u.fatG * qty),
+  };
+}
+
+export function scanItemToLoggedItem({ food, qty, confidence }: ScanItem): LoggedItem {
+  return withQty(
+    {
+      id: `${food.id}-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+      foodId: food.id,
+      en: food.en,
+      bn: food.bn ?? food.en,
+      unitEn: food.unitEn,
+      unitBn: food.unitBn ?? food.unitEn,
+      qty,
+      kcal: 0,
+      proteinG: 0,
+      carbsG: 0,
+      fatG: 0,
+      gi: food.gi,
+      confidence,
+      perUnit: { kcal: food.kcalPerUnit, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG },
+    },
+    qty
+  );
 }
 
 export function foodToLoggedItem(foodId: string, qty: number, confidence?: number): LoggedItem {
