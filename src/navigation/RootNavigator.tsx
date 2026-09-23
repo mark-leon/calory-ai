@@ -1,6 +1,8 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
+import { ActivityIndicator, View } from 'react-native';
+import { useAuth } from '../state/AuthContext';
 import { useAppState } from '../state/AppStateContext';
 import { OnboardingDraftProvider } from '../state/OnboardingDraftContext';
 import AnalysingScreen from '../screens/AnalysingScreen';
@@ -13,19 +15,35 @@ import OnbResultScreen from '../screens/onboarding/OnbResultScreen';
 import PaywallScreen from '../screens/PaywallScreen';
 import ScanResultScreen from '../screens/ScanResultScreen';
 import SearchScreen from '../screens/SearchScreen';
+import SignInScreen from '../screens/SignInScreen';
+import { useTheme } from '../theme/ThemeContext';
 import MainTabs from './MainTabs';
 import { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function RootNavigator() {
-  const { onboarded } = useAppState();
+  const { onboarded, profileSynced } = useAppState();
+  const { session } = useAuth();
+  const { colors } = useTheme();
+
+  // Signed in but the profile hasn't loaded yet: wait, so a returning user on a new
+  // device doesn't get flashed the onboarding flow.
+  if (session && !profileSynced) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface }}>
+        <ActivityIndicator color={colors.accent} />
+      </View>
+    );
+  }
 
   return (
     <NavigationContainer>
       <OnboardingDraftProvider>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
-          {!onboarded ? (
+          {!session ? (
+            <Stack.Screen name="SignIn" component={SignInScreen} />
+          ) : !onboarded ? (
             <>
               <Stack.Screen name="OnbGoal" component={OnbGoalScreen} />
               <Stack.Screen name="OnbBody" component={OnbBodyScreen} />

@@ -1,6 +1,7 @@
 import type { MealType } from '../state/types';
 
 export type RootStackParamList = {
+  SignIn: undefined;
   OnbGoal: undefined;
   OnbBody: undefined;
   OnbActivity: undefined;

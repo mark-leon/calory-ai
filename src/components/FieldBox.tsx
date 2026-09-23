@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text, TextInput, View } from 'react-native';
+import { Text, TextInput, TextInputProps, View } from 'react-native';
 import { useLanguage } from '../i18n/LanguageContext';
 import { useTheme } from '../theme/ThemeContext';
 import { radius } from '../theme/tokens';
@@ -60,7 +60,17 @@ export function NumberField({
   );
 }
 
-export function TextField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder?: string }) {
+export function TextField({
+  value,
+  onChangeText,
+  placeholder,
+  inputProps,
+}: {
+  value: string;
+  onChangeText: (t: string) => void;
+  placeholder?: string;
+  inputProps?: Omit<TextInputProps, 'value' | 'onChangeText' | 'placeholder' | 'style'>;
+}) {
   const { colors } = useTheme();
   const { fonts } = useLanguage();
   return (
@@ -81,6 +91,7 @@ export function TextField({ value, onChangeText, placeholder }: { value: string;
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={colors.muted}
+        {...inputProps}
         style={{ flex: 1, fontFamily: fonts.medium, fontSize: 15, color: colors.ink, padding: 0 }}
       />
     </View>

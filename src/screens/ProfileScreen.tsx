@@ -10,6 +10,7 @@ import { SettingsGroup, SettingsRow } from '../components/SettingsRow';
 import { useLanguage } from '../i18n/LanguageContext';
 import { RootStackParamList } from '../navigation/types';
 import { totalsForDay, useAppState } from '../state/AppStateContext';
+import { useAuth } from '../state/AuthContext';
 import { useTheme } from '../theme/ThemeContext';
 import { radius, spacing } from '../theme/tokens';
 
@@ -21,6 +22,7 @@ export default function ProfileScreen() {
     name, dailyTarget, todayKey, logs, streak, subscription, settings,
     toggleReminders, setTargetOverride, resetAllData, resetOnboarding,
   } = useAppState();
+  const { session, signOut } = useAuth();
 
   const [editTargetVisible, setEditTargetVisible] = useState(false);
   const [draftTarget, setDraftTarget] = useState(dailyTarget);
@@ -60,6 +62,25 @@ export default function ProfileScreen() {
     );
   };
 
+  const confirmSignOut = () => {
+    Alert.alert(t.sSignOut, t.signOutBody, [
+      { text: t.cancelWord, style: 'cancel' },
+      {
+        text: t.sSignOut,
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await signOut();
+          } catch (e) {
+            console.warn('signOut failed', e);
+          }
+          // local data belongs to the previous user; don't show it to the next one
+          resetAllData();
+        },
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.surface }} edges={['top']}>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
@@ -70,7 +91,7 @@ export default function ProfileScreen() {
           </View>
           <View>
             <Text style={{ fontFamily: fonts.semiBold, fontSize: 20, fontWeight: '600', color: colors.ink }}>{name || t.tabProfile}</Text>
-            <Text style={{ fontSize: 13, color: colors.muted }}>{subLabel}</Text>
+            <Text style={{ fontSize: 13, color: colors.muted }}>{session?.user.email ?? subLabel}</Text>
           </View>
         </View>
 
@@ -94,6 +115,7 @@ export default function ProfileScreen() {
             onPress={() => Alert.alert(t.sSupport, lang === 'en' ? "Support chat isn't available in this preview build." : 'সহায়তা চ্যাট এই প্রিভিউ সংস্করণে নেই।')}
             divider
           />
+          <SettingsRow label={t.sSignOut} onPress={confirmSignOut} divider />
           <SettingsRow label={t.sDelete} color={colors.accent} onPress={confirmDelete} divider />
         </SettingsGroup>
       </ScrollView>

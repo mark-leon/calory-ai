@@ -13,12 +13,15 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { LanguageProvider } from './src/i18n/LanguageContext';
 import RootNavigator from './src/navigation/RootNavigator';
 import { AppStateProvider, useAppState } from './src/state/AppStateContext';
+import { AuthProvider, useAuth } from './src/state/AuthContext';
 import { ThemeProvider } from './src/theme/ThemeContext';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function Gate() {
-  const { ready } = useAppState();
+  const { ready: stateReady } = useAppState();
+  const { ready: authReady } = useAuth();
+  const ready = stateReady && authReady;
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
@@ -47,9 +50,11 @@ export default function App() {
     <SafeAreaProvider>
       <ThemeProvider>
         <LanguageProvider>
-          <AppStateProvider>
-            <Gate />
-          </AppStateProvider>
+          <AuthProvider>
+            <AppStateProvider>
+              <Gate />
+            </AppStateProvider>
+          </AuthProvider>
         </LanguageProvider>
       </ThemeProvider>
     </SafeAreaProvider>

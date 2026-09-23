@@ -3,6 +3,8 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { foodById } from '../data/foods';
 import { OnboardingProfile, calculateDailyTarget, macroTargets } from '../utils/calorie';
 import { dateKey } from '../utils/date';
+import { useAuth } from './AuthContext';
+import { RemoteProfile, fetchProfile, saveProfile } from './profileSync';
 import { buildSeedLogs, buildSeedWeights } from './seed';
 import {
   DayLog, LoggedItem, MealType, PersistedState, Settings, Subscription, WeightEntry, emptyDayMeals,
@@ -48,6 +50,8 @@ interface PendingDelete {
 
 interface AppStateValue {
   ready: boolean;
+  /** True once the signed-in user's profile has been pulled from (or pushed to) Supabase. */
+  profileSynced: boolean;
   onboarded: boolean;
   profile: OnboardingProfile | null;
   name: string;
@@ -93,6 +97,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [deletePending, setDeletePending] = useState(false);
   const pendingDelete = useRef<PendingDelete | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { session } = useAuth();
+  const userId = session?.user.id ?? null;
+  const [profileSynced, setProfileSynced] = useState(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     (async () => {
@@ -114,6 +123,57 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     if (!ready) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
   }, [state, ready]);
+
+  // On sign-in: an onboarded remote profile wins (new device / reinstall); otherwise push
+  // whatever this device already has so pre-auth users don't lose their onboarding.
+  useEffect(() => {
+    if (!ready || !userId) {
+      setProfileSynced(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchProfile(userId);
+        if (cancelled) return;
+        if (remote?.onboarded) {
+          setState((s) => ({
+            ...s,
+            onboarded: true,
+            profile: remote.profile,
+            name: remote.name,
+            targetOverride: remote.targetOverride,
+            settings: { ...s.settings, remindersOn: remote.remindersOn },
+          }));
+        } else if (stateRef.current.onboarded) {
+          const s = stateRef.current;
+          await saveProfile(userId, {
+            onboarded: true,
+            profile: s.profile,
+            name: s.name,
+            targetOverride: s.targetOverride,
+            remindersOn: s.settings.remindersOn,
+          });
+        }
+      } catch (e) {
+        // offline or Supabase down: keep using the local copy, retry on next launch
+        console.warn('profile sync failed', e);
+      } finally {
+        if (!cancelled) setProfileSynced(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, userId]);
+
+  const pushProfile = useCallback(
+    (patch: Partial<RemoteProfile>) => {
+      if (!userId) return;
+      saveProfile(userId, patch).catch((e) => console.warn('profile save failed', e));
+    },
+    [userId]
+  );
 
   const todayKey = dateKey(new Date());
   const diabetic = state.profile?.diabetic === 'yes';
@@ -138,7 +198,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const completeOnboarding = useCallback((profile: OnboardingProfile, name: string) => {
     setState((s) => ({ ...s, onboarded: true, profile, name }));
-  }, []);
+    pushProfile({ onboarded: true, profile, name });
+  }, [pushProfile]);
 
   const resetOnboarding = useCallback(() => {
     setState((s) => ({ ...s, onboarded: false }));
@@ -239,12 +300,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const toggleReminders = useCallback(() => {
-    setState((s) => ({ ...s, settings: { ...s.settings, remindersOn: !s.settings.remindersOn } }));
-  }, []);
+    const remindersOn = !stateRef.current.settings.remindersOn;
+    setState((s) => ({ ...s, settings: { ...s.settings, remindersOn } }));
+    pushProfile({ remindersOn });
+  }, [pushProfile]);
 
   const setTargetOverride = useCallback((kcal: number | null) => {
     setState((s) => ({ ...s, targetOverride: kcal }));
-  }, []);
+    pushProfile({ targetOverride: kcal });
+  }, [pushProfile]);
 
   const resetAllData = useCallback(() => {
     setState(defaultState());
@@ -256,6 +320,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const value: AppStateValue = {
     ready,
+    profileSynced,
     onboarded: state.onboarded,
     profile: state.profile,
     name: state.name,
