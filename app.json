@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "Calories",
+    "slug": "calories-app",
+    "version": "1.0.0",
+    "scheme": "calories",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#FAF7F2",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.calories.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Calories uses the camera to identify your meal and estimate its nutrition.",
+        "NSPhotoLibraryUsageDescription": "Choose a meal photo from your gallery to log it."
+      }
+    },
+    "android": {
+      "package": "com.calories.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Calories uses the camera to identify your meal and estimate its nutrition.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose a meal photo from your gallery to log it."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FAF7F2",
+          "image": "./assets/icon.png",
+          "imageWidth": 120
+        }
+      ]
+    ]
+  }
+}
