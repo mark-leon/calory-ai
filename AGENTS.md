@@ -21,7 +21,7 @@ Bangladeshi calorie tracker (Expo SDK 57, React Native 0.86), bilingual Bengali/
 - Meal scan: `supabase/functions/analyze-meal` (Gemini via `generateContent`; model from the `GEMINI_MODEL` secret, default `gemini-3.5-flash-lite`). The app resizes the photo to 1024px JPEG (`src/lib/scan.ts`) and posts it; the function charges the daily quota (`consume_scan`, refunded on error/no food), asks the model to pick from the curated dishes or name the food + grams, and maps "other" items to BFCT/USDA rows via `match_food`. Every scan is logged in `scans` with token counts.
   - Scan quota lives server-side in `profiles.subscription_*`; clients can no longer write those columns (column grants in `20260924090000_meal_scan.sql`). The local counter just mirrors the server.
   - Scan results can be any `foods` row, so `LoggedItem` carries `perUnit` nutrition and `gi` may be null.
-  - Not deployed yet: `supabase functions deploy analyze-meal` and `supabase secrets set GEMINI_API_KEY=...` (use a billing-enabled Gemini project: unpaid-tier inputs may be used by Google).
+  - Deployed to the cloud project; `GEMINI_API_KEY` is a Supabase secret. Redeploy with `supabase functions deploy analyze-meal --use-api`. The Gemini project must have billing enabled before real users (unpaid-tier inputs may be used by Google).
   - Photos are not stored yet. Next: opt-in consent + Storage upload of photo and the user's corrections, for evaluating models and later training.
 
 - Food search (`src/screens/SearchScreen.tsx`): curated dishes are searched locally (instant, Bengali script works); BFCT/USDA through the `search_foods` RPC (all English words prefix-match, `bn_translit` substring, BFCT first), debounced, via `src/lib/foodSearch.ts`.
