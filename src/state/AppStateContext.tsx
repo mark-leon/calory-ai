@@ -1,16 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { foodById } from '../data/foods';
 import { OnboardingProfile, calculateDailyTarget, macroTargets } from '../utils/calorie';
 import { dateKey } from '../utils/date';
+import { newId } from '../utils/id';
 import { useAuth } from './AuthContext';
+import { Outbox, SyncOp, applyOutbox, flushOutbox, itemOpKey, pullLogs, weightOpKey } from './logSync';
 import { RemoteProfile, fetchProfile, saveProfile } from './profileSync';
-import { buildSeedLogs, buildSeedWeights } from './seed';
 import {
-  DayLog, LoggedItem, MealType, PersistedState, ScanItem, Settings, Subscription, WeightEntry, emptyDayMeals,
+  DayLog, LoggedItem, MealType, PersistedState, ScanFood, ScanItem, Settings, Subscription, WeightEntry, emptyDayMeals,
 } from './types';
 
-const STORAGE_KEY = 'calories_app_state_v1';
+// v1 held demo seed logs with non-uuid ids; it's dropped rather than migrated.
+const STORAGE_KEY = 'calories_app_state_v2';
+const LEGACY_STORAGE_KEY = 'calories_app_state_v1';
+const FLUSH_DELAY_MS = 1500;
 const FREE_DAILY_SCANS = 3;
 const DEFAULT_DAILY_TARGET = 2100;
 
@@ -19,12 +25,27 @@ function defaultState(): PersistedState {
     onboarded: false,
     profile: null,
     name: '',
-    logs: buildSeedLogs(),
-    weightHistory: buildSeedWeights(71.4),
+    logs: {},
+    weightHistory: [],
     subscription: { tier: 'free', scanDate: dateKey(new Date()), scansUsedToday: 0 },
     settings: { remindersOn: true },
     targetOverride: null,
+    outbox: {},
+    syncedUserId: null,
   };
+}
+
+function withOps(outbox: Outbox, ops: Record<string, SyncOp>): Outbox {
+  return { ...outbox, ...ops };
+}
+
+// Drop the ops that were sent, unless they've been replaced by a newer change since.
+function withoutSent(outbox: Outbox, sent: Outbox): Outbox {
+  const next: Outbox = {};
+  for (const [key, op] of Object.entries(outbox)) {
+    if (sent[key] !== op) next[key] = op;
+  }
+  return next;
 }
 
 export function totalsForDay(day: DayLog | undefined) {
@@ -82,6 +103,8 @@ interface AppStateValue {
   resetOnboarding: () => void;
   setTargetOverride: (kcal: number | null) => void;
   resetAllData: () => void;
+  /** Sends pending log/weight changes now. Resolves false if they couldn't be sent (offline). */
+  syncNow: () => Promise<boolean>;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -103,10 +126,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [profileSynced, setProfileSynced] = useState(false);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const syncQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     (async () => {
       try {
+        AsyncStorage.removeItem(LEGACY_STORAGE_KEY).catch(() => {});
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as PersistedState;
@@ -168,6 +195,78 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     };
   }, [ready, userId]);
 
+  // Flush (and optionally pull) one run at a time: a pull that overlaps a flush could
+  // miss rows that were just sent and drop them from the screen.
+  const runSync = useCallback((pull: boolean) => {
+    const run = async () => {
+      const uid = userIdRef.current;
+      const s = stateRef.current;
+      if (!uid || s.syncedUserId !== uid) return;
+      const sent = s.outbox;
+      if (Object.keys(sent).length > 0) {
+        await flushOutbox(uid, sent);
+        setState((cur) => ({ ...cur, outbox: withoutSent(cur.outbox, sent) }));
+      }
+      if (pull) {
+        const remote = await pullLogs(uid);
+        if (userIdRef.current !== uid) return;
+        setState((cur) => {
+          const merged = applyOutbox(remote.logs, remote.weights, cur.outbox);
+          return { ...cur, logs: merged.logs, weightHistory: merged.weights };
+        });
+      }
+    };
+    const next = syncQueue.current.catch(() => {}).then(run);
+    syncQueue.current = next;
+    return next;
+  }, []);
+
+  // On sign-in, claim the local data for this account (or drop it if it belongs to a
+  // different one), then send anything pending and pull the account's history.
+  useEffect(() => {
+    if (!ready || !userId) return;
+    const s = stateRef.current;
+    if (s.syncedUserId !== userId) {
+      const claimed: PersistedState =
+        s.syncedUserId === null
+          ? { ...s, syncedUserId: userId }
+          : { ...s, logs: {}, weightHistory: [], outbox: {}, syncedUserId: userId };
+      stateRef.current = claimed;
+      setState((cur) => ({ ...cur, logs: claimed.logs, weightHistory: claimed.weightHistory, outbox: claimed.outbox, syncedUserId: userId }));
+    }
+    runSync(true).catch((e) => console.warn('log sync failed', e));
+  }, [ready, userId, runSync]);
+
+  useEffect(() => {
+    if (!userId || Object.keys(state.outbox).length === 0) return;
+    const timer = setTimeout(() => runSync(false).catch((e) => console.warn('log flush failed', e)), FLUSH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [state.outbox, userId, runSync]);
+
+  // Retry pending changes when the connection comes back; pick up other devices' changes on foreground.
+  useEffect(() => {
+    if (!userId) return;
+    const unsubscribeNet = NetInfo.addEventListener((net) => {
+      if (net.isConnected) runSync(false).catch(() => {});
+    });
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') runSync(true).catch((e) => console.warn('log sync failed', e));
+    });
+    return () => {
+      unsubscribeNet();
+      appStateSub.remove();
+    };
+  }, [userId, runSync]);
+
+  const syncNow = useCallback(async () => {
+    try {
+      await runSync(false);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [runSync]);
+
   const pushProfile = useCallback(
     (patch: Partial<RemoteProfile>) => {
       if (!userId) return;
@@ -198,7 +297,13 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   }, [state.logs, todayKey]);
 
   const completeOnboarding = useCallback((profile: OnboardingProfile, name: string) => {
-    setState((s) => ({ ...s, onboarded: true, profile, name }));
+    setState((s) => {
+      const next = { ...s, onboarded: true, profile, name };
+      if (s.weightHistory.length > 0) return next;
+      // the onboarding weight is the first point on the weight chart
+      const entry = { date: dateKey(new Date()), kg: profile.weightKg };
+      return { ...next, weightHistory: [entry], outbox: withOps(s.outbox, { [weightOpKey(entry.date)]: { kind: 'weight', entry } }) };
+    });
     pushProfile({ onboarded: true, profile, name });
   }, [pushProfile]);
 
@@ -226,7 +331,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const key = dateKey(new Date());
       const existing: DayLog = s.logs[key] || { date: key, meals: emptyDayMeals() };
       const meals = { ...existing.meals, [mealType]: [...existing.meals[mealType], ...items] };
-      return { ...s, logs: { ...s.logs, [key]: { ...existing, meals } } };
+      const ops: Record<string, SyncOp> = {};
+      for (const item of items) ops[itemOpKey(item.id)] = { kind: 'item', date: key, mealType, item };
+      return { ...s, logs: { ...s.logs, [key]: { ...existing, meals } }, outbox: withOps(s.outbox, ops) };
     });
   }, []);
 
@@ -241,7 +348,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         const item = day.meals[mealType][idx];
         pendingDelete.current = { mealType, item, date: key, index: idx };
         const nextItems = day.meals[mealType].filter((it) => it.id !== itemId);
-        return { ...s, logs: { ...s.logs, [key]: { ...day, meals: { ...day.meals, [mealType]: nextItems } } } };
+        return {
+          ...s,
+          logs: { ...s.logs, [key]: { ...day, meals: { ...day.meals, [mealType]: nextItems } } },
+          outbox: withOps(s.outbox, { [itemOpKey(itemId)]: { kind: 'deleteItem', id: itemId } }),
+        };
       });
       showDeleteToast();
     },
@@ -253,8 +364,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const key = dateKey(new Date());
       const day = s.logs[key];
       if (!day) return s;
-      const items = day.meals[mealType].map((it) => (it.id === itemId ? withQty(it, qty) : it));
-      return { ...s, logs: { ...s.logs, [key]: { ...day, meals: { ...day.meals, [mealType]: items } } } };
+      const current = day.meals[mealType].find((it) => it.id === itemId);
+      if (!current) return s;
+      const updated = withQty(current, qty);
+      const items = day.meals[mealType].map((it) => (it.id === itemId ? updated : it));
+      return {
+        ...s,
+        logs: { ...s.logs, [key]: { ...day, meals: { ...day.meals, [mealType]: items } } },
+        outbox: withOps(s.outbox, { [itemOpKey(itemId)]: { kind: 'item', date: key, mealType, item: updated } }),
+      };
     });
   }, []);
 
@@ -265,7 +383,13 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       const day = s.logs[pending.date] || { date: pending.date, meals: emptyDayMeals() };
       const items = [...day.meals[pending.mealType]];
       items.splice(Math.min(pending.index, items.length), 0, pending.item);
-      return { ...s, logs: { ...s.logs, [pending.date]: { ...day, meals: { ...day.meals, [pending.mealType]: items } } } };
+      return {
+        ...s,
+        logs: { ...s.logs, [pending.date]: { ...day, meals: { ...day.meals, [pending.mealType]: items } } },
+        outbox: withOps(s.outbox, {
+          [itemOpKey(pending.item.id)]: { kind: 'item', date: pending.date, mealType: pending.mealType, item: pending.item },
+        }),
+      };
     });
     dismissToast();
   }, [dismissToast]);
@@ -273,8 +397,13 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const addWeight = useCallback((kg: number) => {
     const key = dateKey(new Date());
     setState((s) => {
+      const entry = { date: key, kg };
       const withoutToday = s.weightHistory.filter((w) => w.date !== key);
-      return { ...s, weightHistory: [...withoutToday, { date: key, kg }] };
+      return {
+        ...s,
+        weightHistory: [...withoutToday, entry],
+        outbox: withOps(s.outbox, { [weightOpKey(key)]: { kind: 'weight', entry } }),
+      };
     });
   }, []);
 
@@ -342,6 +471,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     resetOnboarding,
     setTargetOverride,
     resetAllData,
+    syncNow,
   };
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
@@ -353,7 +483,7 @@ export function useAppState() {
   return ctx;
 }
 
-function perUnitOf(item: LoggedItem): NonNullable<LoggedItem['perUnit']> {
+export function perUnitOf(item: LoggedItem): NonNullable<LoggedItem['perUnit']> {
   if (item.perUnit) return item.perUnit;
   const f = foodById(item.foodId);
   if (f) return { kcal: f.kcalPerUnit, proteinG: f.proteinG, carbsG: f.carbsG, fatG: f.fatG };
@@ -374,43 +504,33 @@ export function withQty(item: LoggedItem, qty: number): LoggedItem {
   };
 }
 
-export function scanItemToLoggedItem({ food, qty, confidence }: ScanItem): LoggedItem {
-  return withQty(
-    {
-      id: `${food.id}-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
-      foodId: food.id,
-      en: food.en,
-      bn: food.bn ?? food.en,
-      unitEn: food.unitEn,
-      unitBn: food.unitBn ?? food.unitEn,
-      qty,
-      kcal: 0,
-      proteinG: 0,
-      carbsG: 0,
-      fatG: 0,
-      gi: food.gi,
-      confidence,
-      perUnit: { kcal: food.kcalPerUnit, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG },
-    },
-    qty
-  );
+/** A new log entry for any `foods` row (curated dish, scan result or search result). */
+export function foodItem(food: ScanFood, qty: number, confidence?: number): LoggedItem {
+  const item: LoggedItem = {
+    id: newId(),
+    foodId: food.id,
+    en: food.en,
+    bn: food.bn ?? food.en,
+    unitEn: food.unitEn,
+    unitBn: food.unitBn ?? food.unitEn,
+    qty,
+    kcal: 0,
+    proteinG: 0,
+    carbsG: 0,
+    fatG: 0,
+    gi: food.gi,
+    perUnit: { kcal: food.kcalPerUnit, proteinG: food.proteinG, carbsG: food.carbsG, fatG: food.fatG },
+  };
+  if (confidence !== undefined) item.confidence = confidence;
+  return withQty(item, qty);
 }
 
-export function foodToLoggedItem(foodId: string, qty: number, confidence?: number): LoggedItem {
-  const f = foodById(foodId)!;
-  return {
-    id: `${foodId}-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
-    foodId: f.id,
-    bn: f.bn,
-    en: f.en,
-    unitEn: f.unitEn,
-    unitBn: f.unitBn,
-    qty,
-    kcal: Math.round(f.kcalPerUnit * qty),
-    proteinG: Math.round(f.proteinG * qty),
-    carbsG: Math.round(f.carbsG * qty),
-    fatG: Math.round(f.fatG * qty),
-    gi: f.gi,
-    confidence,
-  };
+export function scanItemToLoggedItem({ food, qty, confidence }: ScanItem): LoggedItem {
+  return foodItem(food, qty, confidence);
+}
+
+/** Log the same food again (recent/frequent chips): one unit, fresh id, no scan confidence. */
+export function repeatItem(item: LoggedItem): LoggedItem {
+  const { confidence: _confidence, ...rest } = withQty(item, 1);
+  return { ...rest, perUnit: perUnitOf(item), id: newId() };
 }

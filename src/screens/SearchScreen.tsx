@@ -1,7 +1,7 @@
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
-import React, { useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/Buttons';
 import { Chip } from '../components/Chip';
@@ -9,12 +9,14 @@ import { CustomFoodSheet } from '../components/CustomFoodSheet';
 import { Icon } from '../components/Icon';
 import { PortionEditSheet } from '../components/PortionEditSheet';
 import { CATEGORY_ORDER, FOODS, FoodCategory, searchFoods } from '../data/foods';
+import { curatedFood, searchDatabaseFoods } from '../lib/foodSearch';
 import { useLanguage } from '../i18n/LanguageContext';
 import { RootStackParamList } from '../navigation/types';
-import { foodToLoggedItem, useAppState } from '../state/AppStateContext';
-import { LoggedItem, MealType } from '../state/types';
+import { foodItem, perUnitOf, repeatItem, useAppState } from '../state/AppStateContext';
+import { LoggedItem, MealType, ScanFood } from '../state/types';
 import { useTheme } from '../theme/ThemeContext';
 import { guessMealTypeForHour } from '../utils/date';
+import { newId } from '../utils/id';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>;
 
@@ -28,44 +30,69 @@ export default function SearchScreen({ route, navigation }: Props) {
   const [category, setCategory] = useState<FoodCategory | null>(null);
   const [pickedFood, setPickedFood] = useState<LoggedItem | null>(null);
   const [customVisible, setCustomVisible] = useState(false);
+  const [remote, setRemote] = useState<{ q: string; foods: ScanFood[] } | null>(null);
+  const trimmed = query.trim();
 
+  // Recent/frequent come from the log itself, so they work for any food, not just curated dishes.
   const { recent, frequent } = useMemo(() => {
     const counts = new Map<string, number>();
-    const order: string[] = [];
+    const latest = new Map<string, LoggedItem>();
     const days = Object.values(logs).sort((a, b) => (a.date < b.date ? 1 : -1));
     for (const day of days) {
       for (const items of Object.values(day.meals)) {
         for (const it of items) {
+          if (it.foodId === 'custom') continue;
           counts.set(it.foodId, (counts.get(it.foodId) || 0) + 1);
-          if (!order.includes(it.foodId)) order.push(it.foodId);
+          if (!latest.has(it.foodId)) latest.set(it.foodId, it);
         }
       }
     }
-    const recentIds = order.slice(0, 6);
     const frequentIds = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => id);
     return {
-      recent: recentIds.map((id) => FOODS.find((f) => f.id === id)!).filter(Boolean),
-      frequent: frequentIds.map((id) => FOODS.find((f) => f.id === id)!).filter(Boolean),
+      recent: [...latest.values()].slice(0, 6),
+      frequent: frequentIds.map((id) => latest.get(id)!),
     };
   }, [logs]);
 
-  const results = useMemo(() => {
-    let list = query.trim() ? searchFoods(query) : FOODS;
-    if (category) list = list.filter((f) => f.category === category);
-    if (!query.trim() && !category) return [];
-    return list.slice(0, 20);
-  }, [query, category]);
+  // Curated dishes are bundled and searched instantly; the full BFCT/USDA database is queried remotely.
+  useEffect(() => {
+    if (trimmed.length < 2 || category) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      searchDatabaseFoods(trimmed)
+        .then((foods) => !cancelled && setRemote({ q: trimmed, foods }))
+        .catch((e) => {
+          console.warn('food search failed', e);
+          if (!cancelled) setRemote({ q: trimmed, foods: [] });
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmed, category]);
 
-  const showBrowsePrompt = !query.trim() && !category;
-  const noResults = (query.trim() || category) && results.length === 0;
+  const searching = trimmed.length >= 2 && !category && remote?.q !== trimmed;
+
+  const results = useMemo(() => {
+    if (!trimmed && !category) return [];
+    let local = trimmed ? searchFoods(trimmed) : FOODS;
+    if (category) local = local.filter((f) => f.category === category);
+    const list = local.map(curatedFood);
+    if (!category && remote?.q === trimmed) list.push(...remote.foods);
+    return list;
+  }, [trimmed, category, remote]);
+
+  const showBrowsePrompt = !trimmed && !category;
+  const noResults = (trimmed || category) && results.length === 0 && !searching;
 
   const catLabels: Record<FoodCategory, string> = {
     rice: t.cat[0], dal: t.cat[1], bhorta: t.cat[2], fish: t.cat[3], meat: t.cat[4],
     vegetables: t.cat[5], snacks: t.cat[6], sweets: t.cat[7], drinks: t.cat[8], packaged: t.cat[9],
   };
 
-  const quickAdd = (foodId: string) => {
-    addItems(mealType, [foodToLoggedItem(foodId, 1)]);
+  const quickAdd = (item: LoggedItem) => {
+    addItems(mealType, [repeatItem(item)]);
     goBackOrHome();
   };
 
@@ -99,8 +126,8 @@ export default function SearchScreen({ route, navigation }: Props) {
           <View style={{ paddingHorizontal: 20 }}>
             <SectionLabel>{t.frequent}</SectionLabel>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 9 }}>
-              {frequent.map((f) => (
-                <Chip key={f.id} label={`${lang === 'en' ? f.en : f.bn} · 1 ${lang === 'en' ? f.unitEn : f.unitBn}`} tone="accent" trailing={String(f.kcalPerUnit)} onPress={() => quickAdd(f.id)} />
+              {frequent.map((it) => (
+                <Chip key={it.foodId} label={`${lang === 'en' ? it.en : it.bn} · 1 ${lang === 'en' ? it.unitEn : it.unitBn}`} tone="accent" trailing={String(Math.round(perUnitOf(it).kcal))} onPress={() => quickAdd(it)} />
               ))}
             </View>
           </View>
@@ -110,8 +137,8 @@ export default function SearchScreen({ route, navigation }: Props) {
           <View style={{ paddingHorizontal: 20, marginTop: 18 }}>
             <SectionLabel>{t.recent}</SectionLabel>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 9 }}>
-              {recent.map((f) => (
-                <Chip key={f.id} label={`${lang === 'en' ? f.en : f.bn} · 1 ${lang === 'en' ? f.unitEn : f.unitBn}`} onPress={() => quickAdd(f.id)} />
+              {recent.map((it) => (
+                <Chip key={it.foodId} label={`${lang === 'en' ? it.en : it.bn} · 1 ${lang === 'en' ? it.unitEn : it.unitBn}`} onPress={() => quickAdd(it)} />
               ))}
             </View>
           </View>
@@ -133,17 +160,17 @@ export default function SearchScreen({ route, navigation }: Props) {
               {results.map((f, idx) => (
                 <Pressable
                   key={f.id}
-                  onPress={() => setPickedFood(foodToLoggedItem(f.id, 1))}
+                  onPress={() => setPickedFood(foodItem(f, 1))}
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 11, minHeight: 48, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: colors.border }}
                 >
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={{ fontFamily: fonts.medium, fontSize: 15, fontWeight: '500', color: colors.ink }}>{lang === 'en' ? f.en : f.bn}</Text>
+                    <Text style={{ fontFamily: fonts.medium, fontSize: 15, fontWeight: '500', color: colors.ink }}>{lang === 'en' || !f.bn ? f.en : f.bn}</Text>
                     <Text style={{ fontSize: 13, color: colors.muted }}>
-                      {lang === 'en' ? f.bn : f.en} · 1 {lang === 'en' ? f.unitEn : f.unitBn}
+                      {[lang === 'en' ? f.bn : f.bn ? f.en : null, `1 ${lang === 'en' ? f.unitEn : f.unitBn ?? f.unitEn}`].filter(Boolean).join(' · ')}
                     </Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 15, fontWeight: '600', color: colors.ink }}>{f.kcalPerUnit}</Text>
+                    <Text style={{ fontFamily: 'Inter_600SemiBold', fontSize: 15, fontWeight: '600', color: colors.ink }}>{Math.round(f.kcalPerUnit)}</Text>
                     <Text style={{ fontSize: 13, color: colors.muted }}>kcal</Text>
                   </View>
                 </Pressable>
@@ -151,6 +178,8 @@ export default function SearchScreen({ route, navigation }: Props) {
             </View>
           </View>
         ) : null}
+
+        {searching ? <ActivityIndicator color={colors.accent} style={{ marginTop: 18 }} /> : null}
 
         {noResults ? (
           <View style={{ marginTop: 24, paddingHorizontal: 20 }}>
@@ -180,7 +209,7 @@ export default function SearchScreen({ route, navigation }: Props) {
         onAdd={(name, kcal) => {
           addItems(mealType, [
             {
-              id: `custom-${Date.now()}`,
+              id: newId(),
               foodId: 'custom',
               bn: name,
               en: name,
@@ -191,7 +220,7 @@ export default function SearchScreen({ route, navigation }: Props) {
               proteinG: 0,
               carbsG: 0,
               fatG: 0,
-              gi: 'medium',
+              gi: null,
             },
           ]);
           setCustomVisible(false);

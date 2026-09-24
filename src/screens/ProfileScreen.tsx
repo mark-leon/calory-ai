@@ -20,7 +20,7 @@ export default function ProfileScreen() {
   const rootNav = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const {
     name, dailyTarget, todayKey, logs, streak, subscription, settings,
-    toggleReminders, setTargetOverride, resetAllData, resetOnboarding,
+    toggleReminders, setTargetOverride, resetAllData, resetOnboarding, syncNow,
   } = useAppState();
   const { session, signOut } = useAuth();
 
@@ -69,6 +69,11 @@ export default function ProfileScreen() {
         text: t.sSignOut,
         style: 'destructive',
         onPress: async () => {
+          // local data is wiped on sign-out, so anything unsent would be lost
+          if (!(await syncNow())) {
+            Alert.alert(t.unsyncedTitle, t.unsyncedBody);
+            return;
+          }
           try {
             await signOut();
           } catch (e) {
